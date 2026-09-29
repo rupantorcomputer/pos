@@ -319,7 +319,7 @@ body[data-theme="dark"] .profit-stat{background:#12243b;border-color:#2b4565}
     <h1>রূপান্তর কম্পিউটার</h1>
     <p class="login-sub">POS Management System • User Login</p>
     <form id="loginForm" autocomplete="off">
-      <div class="login-field"><label for="loginUsername">Username</label><input id="loginUsername" type="text" placeholder="Username" autocomplete="username" required></div>
+      <div class="login-field"><label for="loginUsername">Email</label><input id="loginUsername" type="email" placeholder="name@example.com" autocomplete="username" required></div>
       <div class="login-field"><label for="loginPassword">Password</label><input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password" required></div>
       <button class="login-btn" type="submit">🔐 Login</button>
       <div id="loginError" class="login-error"></div>
@@ -2226,259 +2226,74 @@ function initIncomeExpense(){
 }
 </script>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script id="pos-login-script">
 (function(){
-  const SESSION_KEY='pos_logged_in_user_v2';
-  const USERS_KEY='rupantor_pos_users_v2';
+  const SUPABASE_URL='https://czatlmlshsvgxzsihdtl.supabase.co';
+  const SUPABASE_KEY='sb_publishable_ryqyhJ_waWxaarvDwCKACA_UqBUiDe_';
   const ROLES_KEY='rupantor_pos_roles_v2';
-  const DEFAULT_USERS={
-    admin:{password:'1234',name:'Admin',role:'admin',active:true},
-    manager:{password:'manager123',name:'Manager',role:'manager',active:true},
-    cashier:{password:'cashier123',name:'Cashier',role:'cashier',active:true}
-  };
   const ALL_PAGES=['salesPage','manualInvoicePage','inventoryPage','historyPage','reportPage','duePage','debtReceivablePage','incomePage','expensePage','monthlyAccountingPage','graphPage','toolsPage','customersPage'];
   const PAGE_LABELS={salesPage:'বিক্রয় / Sales',manualInvoicePage:'Manual Invoice',inventoryPage:'Inventory',historyPage:'Sales History',reportPage:'Report',duePage:'বাকি / Due',debtReceivablePage:'দেনা-পাওনা',incomePage:'আয় / Income',expensePage:'ব্যয় / Expense',monthlyAccountingPage:'Monthly Accounting',graphPage:'Graph Chart',toolsPage:'Tools / Backup',customersPage:'Customer Management'};
-  const DEFAULT_ROLES={
-    admin:{name:'Admin',permissions:ALL_PAGES.slice()},
-    manager:{name:'Manager',permissions:ALL_PAGES.slice()},
-    cashier:{name:'Cashier',permissions:['salesPage','manualInvoicePage','historyPage','duePage','customersPage']}
-  };
-  function loadRoles(){
-    try{
-      const saved=JSON.parse(localStorage.getItem(ROLES_KEY)||'null');
-      if(!saved){localStorage.setItem(ROLES_KEY,JSON.stringify(DEFAULT_ROLES));return JSON.parse(JSON.stringify(DEFAULT_ROLES));}
-      const merged=JSON.parse(JSON.stringify(DEFAULT_ROLES));
-      Object.keys(saved).forEach(r=>{if(merged[r]){merged[r].name=saved[r].name||merged[r].name;merged[r].permissions=Array.isArray(saved[r].permissions)?saved[r].permissions.filter(x=>ALL_PAGES.includes(x)):merged[r].permissions;}});
-      localStorage.setItem(ROLES_KEY,JSON.stringify(merged)); return merged;
-    }catch(e){localStorage.setItem(ROLES_KEY,JSON.stringify(DEFAULT_ROLES));return JSON.parse(JSON.stringify(DEFAULT_ROLES));}
-  }
+  const DEFAULT_ROLES={admin:{name:'Admin',permissions:ALL_PAGES.slice()},manager:{name:'Manager',permissions:ALL_PAGES.slice()},cashier:{name:'Cashier',permissions:['salesPage','manualInvoicePage','historyPage','duePage','customersPage']}};
+  let roles=loadRoles(), profileCache={};
+  // Remove legacy browser-password login records; Supabase Auth owns credentials now.
+  try{localStorage.removeItem('rupantor_pos_users_v2');localStorage.removeItem('pos_logged_in_user_v2');}catch(e){}
+  async function loadCloudRoles(){try{const {data,error}=await window.posSupabase.from('pos_role_permissions').select('role,name,permissions');if(error)throw error;(data||[]).forEach(r=>{if(roles[r.role]&&Array.isArray(r.permissions)){roles[r.role].name=r.name||roles[r.role].name;roles[r.role].permissions=r.permissions.filter(x=>ALL_PAGES.includes(x));}});saveRoles(roles);}catch(e){console.warn('Role permissions cloud load failed:',e);}}
+  function loadRoles(){try{const saved=JSON.parse(localStorage.getItem(ROLES_KEY)||'null');const merged=JSON.parse(JSON.stringify(DEFAULT_ROLES));Object.keys(saved||{}).forEach(r=>{if(merged[r]){merged[r].name=saved[r].name||merged[r].name;merged[r].permissions=Array.isArray(saved[r].permissions)?saved[r].permissions.filter(x=>ALL_PAGES.includes(x)):merged[r].permissions;}});localStorage.setItem(ROLES_KEY,JSON.stringify(merged));return merged;}catch(e){localStorage.setItem(ROLES_KEY,JSON.stringify(DEFAULT_ROLES));return JSON.parse(JSON.stringify(DEFAULT_ROLES));}}
   function saveRoles(next){localStorage.setItem(ROLES_KEY,JSON.stringify(next));}
-  let roles=loadRoles();
-  function loadUsers(){
-    try{
-      const saved=JSON.parse(localStorage.getItem(USERS_KEY)||'null');
-      if(!saved){localStorage.setItem(USERS_KEY,JSON.stringify(DEFAULT_USERS));return JSON.parse(JSON.stringify(DEFAULT_USERS));}
-      return saved;
-    }catch(e){localStorage.setItem(USERS_KEY,JSON.stringify(DEFAULT_USERS));return JSON.parse(JSON.stringify(DEFAULT_USERS));}
-  }
-  function saveUsers(users){localStorage.setItem(USERS_KEY,JSON.stringify(users));}
-  let users=loadUsers();
-  function rolePages(role){ return role==='admin' ? ALL_PAGES.concat(['userManagementPage']) : (roles[role]?.permissions||[]); }
-  function current(){try{return JSON.parse(localStorage.getItem(SESSION_KEY)||'null')}catch(e){return null}}
-  function applyAccess(user){
-    const role=user?.role||'cashier';
-    const allowed=rolePages(role);
-    document.querySelectorAll('.pos-nav .nav-btn').forEach(btn=>{
-      const id=btn.dataset.page;
-      btn.classList.toggle('role-hidden',!allowed.includes(id));
-    });
-    document.querySelectorAll('.role-admin-only').forEach(el=>el.classList.toggle('role-hidden',role!=='admin'));
-    document.body.dataset.userRole=role;
-    const label=document.getElementById('loggedInUser');
-    if(label)label.textContent=(user.name||user.username)+' • '+role.charAt(0).toUpperCase()+role.slice(1);
-  }
-  window.posCanAccess=function(id){
-    const u=current();
-    if(!u)return false;
-    return rolePages(u.role).includes(id);
-  };
-  function setLoginState(user){
-    localStorage.setItem(SESSION_KEY,JSON.stringify({username:user.username,name:user.name,role:user.role,loggedAt:Date.now()}));
-    const overlay=document.getElementById('loginOverlay'); if(overlay)overlay.classList.add('hidden');
-    applyAccess(user);
-    const first=(rolePages(user.role)||['salesPage']).find(id=>document.getElementById(id));
-    if(first && typeof window.showPageById==='function') setTimeout(()=>window.showPageById(first),0);
-  }
-  function showLogin(){const overlay=document.getElementById('loginOverlay');if(overlay)overlay.classList.remove('hidden');setTimeout(()=>document.getElementById('loginUsername')?.focus(),50);}
-  window.posLogout=function(){localStorage.removeItem(SESSION_KEY);document.body.dataset.userRole='';showLogin();const p=document.getElementById('loginPassword');if(p)p.value='';};
-  window.posGetUsers=function(){return users};
-  window.posSaveUsers=function(next){users=next;saveUsers(users);renderPosUsers();};
-  window.renderPosUsers=function(){
-    const body=document.getElementById('posUsersBody');if(!body)return;
-    const entries=Object.entries(users);
-    body.innerHTML=entries.map(([username,u])=>`<tr><td><b>${escapeHtml(username)}</b></td><td>${escapeHtml(u.name||username)}</td><td><span class="role-badge">${escapeHtml(roles[u.role]?.name||u.role)}</span></td><td>${u.active===false?'Inactive':'Active'}</td><td><div class="user-actions">${username!=='admin'?`<button type="button" class="secondary" onclick="editPosUser('${escapeHtml(username)}')">✏️ Edit</button><button type="button" class="secondary" onclick="resetPosUserPassword('${escapeHtml(username)}')">🔑 Password</button><button type="button" class="danger" onclick="togglePosUser('${escapeHtml(username)}')">${u.active===false?'Enable':'Disable'}</button>`:'<small>Protected</small>'}</div></td></tr>`).join('');
-  };
-  window.resetPosUserForm=function(){['newUsername','newUserName','newUserPassword'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});const b=document.querySelector('#userFormTitle');if(b)b.textContent='➕ নতুন User';const btn=document.querySelector('#userFormTitle')?.parentElement?.querySelector('button[onclick="createPosUser()"]');if(btn){btn.textContent='💾 User তৈরি করুন';btn.dataset.editing='';}}
-  window.editPosUser=function(username){
-    if(current()?.role!=='admin')return; const u=users[username];if(!u)return;
-    document.getElementById('newUsername').value=username;document.getElementById('newUsername').disabled=true;
-    document.getElementById('newUserName').value=u.name||'';document.getElementById('newUserRole').value=u.role||'cashier';document.getElementById('newUserPassword').value='';
-    const title=document.getElementById('userFormTitle');if(title)title.textContent='✏️ User Edit';
-    const btn=document.querySelector('#userFormTitle')?.parentElement?.querySelector('button[onclick="createPosUser()"]');if(btn){btn.textContent='💾 User Update';btn.dataset.editing=username;}
-  };
-  window.createPosUser=function(){
-    if(current()?.role!=='admin')return alert('শুধু Admin user manage করতে পারবেন।');
-    const username=(document.getElementById('newUsername')?.value||'').trim().toLowerCase();
-    const name=(document.getElementById('newUserName')?.value||'').trim();
-    const role=document.getElementById('newUserRole')?.value||'cashier';
-    const password=document.getElementById('newUserPassword')?.value||'';
-    const btn=document.querySelector('#userFormTitle')?.parentElement?.querySelector('button[onclick="createPosUser()"]');
-    const editing=btn?.dataset.editing||'';
-    if(!/^[a-z0-9._-]{3,30}$/.test(username))return alert('Username 3-30 অক্ষরের ইংরেজি অক্ষর/সংখ্যা দিয়ে দিন।');
-    if(!editing && users[username])return alert('এই username আগে থেকেই আছে।');
-    if(!name)return alert('User-এর নাম দিন।');
-    if(!editing && password.length<4)return alert('Password কমপক্ষে 4 অক্ষরের হতে হবে।');
-    if(editing){
-      const u=users[editing]; if(!u)return;
-      u.name=name;u.role=role;if(password)u.password=password;saveUsers(users);alert('User update হয়েছে।');
-    }else{ users[username]={password,name,role,active:true};saveUsers(users);alert('User তৈরি হয়েছে।'); }
-    document.getElementById('newUsername').disabled=false;resetPosUserForm();renderPosUsers();
-  };
-  window.resetPosUserPassword=function(username){
-    if(current()?.role!=='admin')return; const u=users[username];if(!u)return;
-    const p=prompt('নতুন password দিন:', '');if(p===null)return;if(p.length<4)return alert('Password কমপক্ষে 4 অক্ষরের হতে হবে।');
-    u.password=p;saveUsers(users);alert('Password পরিবর্তন হয়েছে।');
-  };
-  window.togglePosUser=function(username){
-    if(current()?.role!=='admin')return; const u=users[username];if(!u)return;
-    u.active=u.active===false;saveUsers(users);renderPosUsers();
-  };
-  window.renderRoleEditor=function(){
-    const role=document.getElementById('permissionRoleSelect')?.value||'manager';const grid=document.getElementById('permissionGrid');if(!grid)return;
-    const perms=new Set(roles[role]?.permissions||[]);
-    grid.innerHTML=ALL_PAGES.map(id=>`<label class="permission-item"><input type="checkbox" value="${id}" ${perms.has(id)?'checked':''}> <span>${escapeHtml(PAGE_LABELS[id]||id)}</span></label>`).join('');
-  };
-  window.saveRolePermissions=function(){
-    if(current()?.role!=='admin')return alert('শুধু Admin permission পরিবর্তন করতে পারবেন।');
-    const role=document.getElementById('permissionRoleSelect')?.value||'manager';if(role==='admin')return alert('Admin-এর full access পরিবর্তন করা যাবে না।');
-    const permissions=[...document.querySelectorAll('#permissionGrid input[type="checkbox"]:checked')].map(x=>x.value);
-    roles[role].permissions=permissions;saveRoles(roles);applyAccess(current());alert((roles[role].name||role)+' permission save হয়েছে।');
-  };
-  window.resetSelectedRolePermissions=function(){
-    const role=document.getElementById('permissionRoleSelect')?.value||'manager';if(role==='admin')return;
-    roles[role].permissions=(DEFAULT_ROLES[role]?.permissions||[]).slice();saveRoles(roles);renderRoleEditor();applyAccess(current());
-  };
-  document.addEventListener('DOMContentLoaded',function(){
-    users=loadUsers(); roles=loadRoles(); renderPosUsers(); renderRoleEditor();
-    const saved=current();
-    if(saved&&users[saved.username]&&users[saved.username].active!==false){
-      const u={username:saved.username,name:users[saved.username].name,role:users[saved.username].role};
-      setLoginState(u);
-    }else{if(saved)localStorage.removeItem(SESSION_KEY);showLogin();}
+  function rolePages(role){return role==='admin'?ALL_PAGES.concat(['userManagementPage']):(roles[role]?.permissions||[]);}
+  function current(){return window.__posAuthProfile||null;}
+  function applyAccess(user){const role=user?.role||'cashier',allowed=rolePages(role);document.querySelectorAll('.pos-nav .nav-btn').forEach(btn=>btn.classList.toggle('role-hidden',!allowed.includes(btn.dataset.page)));document.querySelectorAll('.role-admin-only').forEach(el=>el.classList.toggle('role-hidden',role!=='admin'));document.body.dataset.userRole=role;const label=document.getElementById('loggedInUser');if(label)label.textContent=(user.display_name||user.name||user.email||'User')+' • '+role.charAt(0).toUpperCase()+role.slice(1);}
+  window.posCanAccess=id=>!!current()&&rolePages(current().role).includes(id);
+  function showLogin(){document.getElementById('loginOverlay')?.classList.remove('hidden');}
+  async function getProfile(authUser){const {data,error}=await window.posSupabase.from('pos_profiles').select('user_id,email,display_name,role,active').eq('user_id',authUser.id).maybeSingle();if(error)throw error;if(!data||data.active===false)throw new Error('এই account সক্রিয় নয় অথবা profile তৈরি হয়নি। Admin-এর সঙ্গে যোগাযোগ করুন।');return data;}
+  function setLoginState(profile){window.__posAuthProfile=profile;document.getElementById('loginOverlay')?.classList.add('hidden');applyAccess(profile);const first=(rolePages(profile.role)||['salesPage']).find(id=>document.getElementById(id));if(first&&typeof window.showPageById==='function')setTimeout(()=>window.showPageById(first),0);document.dispatchEvent(new CustomEvent('pos-auth-changed',{detail:{signedIn:true}}));}
+  window.posLogout=async function(){try{await window.posSupabase.auth.signOut();}finally{window.__posAuthProfile=null;document.body.dataset.userRole='';showLogin();document.getElementById('loginPassword').value='';document.dispatchEvent(new CustomEvent('pos-auth-changed',{detail:{signedIn:false}}));}};
+  window.posGetUsers=()=>profileCache;
+  window.posSaveUsers=()=>alert('নিরাপত্তার জন্য user account Supabase Auth থেকে manage করতে হবে।');
+  window.renderPosUsers=async function(){const body=document.getElementById('posUsersBody');if(!body)return;if(current()?.role!=='admin'){body.innerHTML='<tr><td colspan="5">শুধু Admin দেখতে পারবেন।</td></tr>';return;}body.innerHTML='<tr><td colspan="5">লোড হচ্ছে...</td></tr>';const {data,error}=await window.posSupabase.from('pos_profiles').select('user_id,email,display_name,role,active').order('email');if(error){body.innerHTML='<tr><td colspan="5">User list লোড হয়নি: '+String(error.message).replace(/[<>]/g,'')+'</td></tr>';return;}profileCache={};(data||[]).forEach(u=>profileCache[u.email]=u);body.innerHTML=(data||[]).map(u=>`<tr><td><b>${escapeHtml(u.email||'')}</b></td><td>${escapeHtml(u.display_name||u.email||'')}</td><td><select aria-label="Role" onchange="updateSupabaseUserRole('${u.user_id}',this.value)" ${u.user_id===current()?.user_id?'disabled':''}><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option><option value="manager" ${u.role==='manager'?'selected':''}>Manager</option><option value="cashier" ${u.role==='cashier'?'selected':''}>Cashier</option></select></td><td>${u.active===false?'Inactive':'Active'}</td><td><div class="user-actions"><button type="button" class="secondary" onclick="sendSupabasePasswordReset('${encodeURIComponent(u.email||'') }')">🔑 Password reset email</button>${u.user_id!==current()?.user_id?`<button type="button" class="danger" onclick="toggleSupabaseUser('${u.user_id}',${u.active===false?'true':'false'})">${u.active===false?'Enable':'Disable'}</button>`:'<small>Current user</small>'}</div></td></tr>`).join('')||'<tr><td colspan="5">কোনো user নেই।</td></tr>';};
+  window.updateSupabaseUserRole=async function(id,role){if(current()?.role!=='admin'||!['admin','manager','cashier'].includes(role))return;const {error}=await window.posSupabase.from('pos_profiles').update({role}).eq('user_id',id);if(error){alert('Role update হয়নি: '+error.message);renderPosUsers();return;}renderPosUsers();};
+  window.toggleSupabaseUser=async function(id,active){if(current()?.role!=='admin')return;const {error}=await window.posSupabase.from('pos_profiles').update({active}).eq('user_id',id);if(error){alert('Account status update হয়নি: '+error.message);return;}renderPosUsers();};
+  window.sendSupabasePasswordReset=async function(encoded){const email=decodeURIComponent(encoded);const {error}=await window.posSupabase.auth.resetPasswordForEmail(email);alert(error?'Reset email পাঠানো যায়নি: '+error.message:'Password reset email পাঠানোর অনুরোধ করা হয়েছে।');};
+  window.renderRoleEditor=function(){const role=document.getElementById('permissionRoleSelect')?.value||'manager',grid=document.getElementById('permissionGrid');if(!grid)return;const perms=new Set(roles[role]?.permissions||[]);grid.innerHTML=ALL_PAGES.map(id=>`<label class="permission-item"><input type="checkbox" value="${id}" ${perms.has(id)?'checked':''}> <span>${escapeHtml(PAGE_LABELS[id]||id)}</span></label>`).join('');};
+  window.saveRolePermissions=async function(){if(current()?.role!=='admin')return alert('শুধু Admin permission পরিবর্তন করতে পারবেন।');const role=document.getElementById('permissionRoleSelect')?.value||'manager';if(role==='admin')return alert('Admin-এর full access পরিবর্তন করা যাবে না।');roles[role].permissions=[...document.querySelectorAll('#permissionGrid input[type="checkbox"]:checked')].map(x=>x.value);const {error}=await window.posSupabase.from('pos_role_permissions').update({permissions:roles[role].permissions}).eq('role',role);if(error)return alert('Cloud permission save হয়নি: '+error.message);saveRoles(roles);applyAccess(current());alert((roles[role].name||role)+' permission save হয়েছে।');};
+  window.resetSelectedRolePermissions=async function(){const role=document.getElementById('permissionRoleSelect')?.value||'manager';if(role==='admin')return;roles[role].permissions=(DEFAULT_ROLES[role]?.permissions||[]).slice();const {error}=await window.posSupabase.from('pos_role_permissions').update({permissions:roles[role].permissions}).eq('role',role);if(error)return alert('Cloud permission reset হয়নি: '+error.message);saveRoles(roles);renderRoleEditor();applyAccess(current());};
+  // Legacy user form is intentionally disabled: passwords must never be stored in localStorage.
+  window.createPosUser=()=>alert('নতুন user তৈরি করতে Supabase Dashboard → Authentication → Users → Add user ব্যবহার করুন। তারপর SQL setup guide অনুযায়ী role দিন.');
+  window.editPosUser=()=>alert('User role/status Supabase User Management table থেকে edit করুন.');
+  window.resetPosUserPassword=()=>alert('Password reset email Supabase Auth দিয়ে পাঠান.');
+  window.togglePosUser=()=>alert('Account status Admin user list থেকে পরিবর্তন করুন.');
+  window.posAuthReady=(async()=>{
+    if(!window.supabase?.createClient){showLogin();throw new Error('Supabase JS library load হয়নি.');}
+    window.posSupabase=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
     const form=document.getElementById('loginForm');
-    if(form)form.addEventListener('submit',function(e){
-      e.preventDefault();
-      users=loadUsers();
-      const username=(document.getElementById('loginUsername').value||'').trim().toLowerCase();
-      const password=document.getElementById('loginPassword').value||'';
-      const user=users[username],err=document.getElementById('loginError');
-      if(user&&user.active!==false&&user.password===password){
-        if(err)err.textContent='';setLoginState({username,name:user.name,role:user.role});document.getElementById('loginPassword').value='';
-      }else if(user&&user.active===false){if(err)err.textContent='এই accountটি বন্ধ করা আছে।';}
-      else{if(err)err.textContent='Username অথবা password সঠিক নয়।';}
-    });
-  });
+    if(form)form.addEventListener('submit',async e=>{e.preventDefault();const email=(document.getElementById('loginUsername').value||'').trim().toLowerCase(),password=document.getElementById('loginPassword').value||'',err=document.getElementById('loginError'),btn=form.querySelector('button[type="submit"]');if(err)err.textContent='';if(btn)btn.disabled=true;try{const {data,error}=await window.posSupabase.auth.signInWithPassword({email,password});if(error)throw error;const profile=await getProfile(data.user);await loadCloudRoles();setLoginState(profile);document.getElementById('loginPassword').value='';}catch(ex){try{await window.posSupabase.auth.signOut();}catch(ignore){}if(err)err.textContent=ex.message||'Login করা যায়নি।';}finally{if(btn)btn.disabled=false;}});
+    const {data:{session}}=await window.posSupabase.auth.getSession();
+    if(session){try{await loadCloudRoles();setLoginState(await getProfile(session.user));}catch(e){await window.posSupabase.auth.signOut();window.__posAuthProfile=null;showLogin();}}
+    else showLogin();
+    window.posSupabase.auth.onAuthStateChange(async(event,sessionNow)=>{if(event==='SIGNED_OUT'){window.__posAuthProfile=null;showLogin();document.dispatchEvent(new CustomEvent('pos-auth-changed',{detail:{signedIn:false}}));}});
+    return true;
+  })().catch(e=>{console.error('Supabase Auth init:',e);showLogin();return false;});
+  document.addEventListener('DOMContentLoaded',()=>{renderRoleEditor();const page=document.getElementById('userManagementPage');if(page){const note=document.createElement('p');note.className='role-editor-note';note.textContent='নতুন account Supabase Dashboard → Authentication → Users থেকে তৈরি করুন। Role/status এখানে Admin manage করতে পারবেন। Password browser-এ সংরক্ষণ করা হয় না।';page.prepend(note);} });
 })();
 </script>
 <script id="supabase-sync-script">
-/* ===== Supabase cloud sync for Rupantor Computer POS =====
-   This keeps the existing POS UI/localStorage logic intact and mirrors
-   business data to one Supabase row.
-*/
+/* Authenticated, role-filtered Supabase RPC sync. No anonymous table access. */
 (function(){
-  const SUPABASE_URL = 'https://czatlmlshsvgxzsihdtl.supabase.co';
-  const SUPABASE_KEY = 'sb_publishable_ryqyhJ_waWxaarvDwCKACA_UqBUiDe_';
-  const TABLE = 'pos_state';
-  const ROW_ID = 'main';
-  const SYNC_KEYS = [
-    'rupantor_pos_products','rupantor_pos_sales','rupantor_pos_debt_receivable',
-    'rupantor_pos_customers','rupantor_pos_deleted_customers',
-    'rupantor_pos_income_entries','rupantor_pos_expense_entries',
-    'rupantor_pos_monthly_closed','rupantor_pos_accounting_month',
-    'rupantor_pos_users_v2','rupantor_pos_roles_v2','rupantor_security_pin'
-  ];
-  const endpoint = SUPABASE_URL + '/rest/v1/' + TABLE;
-  const headers = {
-    'apikey': SUPABASE_KEY,
-    'Authorization': 'Bearer ' + SUPABASE_KEY,
-    'Content-Type': 'application/json',
-    'Prefer': 'return=minimal'
-  };
-
-  function readState(){
-    const data={};
-    SYNC_KEYS.forEach(k=>{
-      const v=localStorage.getItem(k);
-      if(v!==null) data[k]=v;
-    });
-    return data;
-  }
-  function writeState(data){
-    if(!data || typeof data!=='object') return;
-    SYNC_KEYS.forEach(k=>{
-      if(Object.prototype.hasOwnProperty.call(data,k)) localStorage.setItem(k,String(data[k]));
-    });
-  }
-  let syncing=false, timer=null, originalSetItem=localStorage.setItem.bind(localStorage);
-
-  async function cloudGet(){
-    const r=await fetch(endpoint+'?id=eq.'+encodeURIComponent(ROW_ID)+'&select=id,data,updated_at',{headers});
-    if(!r.ok) throw new Error('Supabase GET '+r.status);
-    const rows=await r.json();
-    return rows[0]||null;
-  }
-  async function cloudSave(){
-    if(syncing) return;
-    syncing=true;
-    try{
-      const body={id:ROW_ID,data:readState(),updated_at:new Date().toISOString()};
-      const r=await fetch(endpoint,{method:'POST',headers:{...headers,'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify(body)});
-      if(!r.ok) throw new Error('Supabase SAVE '+r.status+' '+(await r.text()).slice(0,180));
-      setStatus('☁ Synced');
-    }catch(e){
-      console.warn('Supabase sync failed:',e);
-      setStatus('☁ Offline');
-    }finally{syncing=false;}
-  }
-  function queueSave(){
-    clearTimeout(timer);
-    timer=setTimeout(cloudSave,700);
-  }
-  function setStatus(t){
-    const el=document.getElementById('supabaseSyncStatus');
-    if(el) el.textContent=t;
-  }
-  function installWatcher(){
-    const native=localStorage.setItem.bind(localStorage);
-    localStorage.setItem=function(k,v){
-      native(k,v);
-      if(!syncing && SYNC_KEYS.includes(String(k))) queueSave();
-    };
-    window.addEventListener('beforeunload',()=>{
-      if(!syncing) cloudSave();
-    });
-  }
-  function addStatusUI(){
-    if(document.getElementById('supabaseSyncStatus')) return;
-    const el=document.createElement('div');
-    el.id='supabaseSyncStatus';
-    el.textContent='☁ Connecting...';
-    el.style.cssText='position:fixed;right:14px;bottom:14px;z-index:99999;background:#0b55c7;color:#fff;padding:7px 11px;border-radius:999px;font:700 12px Arial;box-shadow:0 5px 18px #0002';
-    document.body.appendChild(el);
-  }
-  async function start(){
-    addStatusUI();
-    try{
-      const cloud=await cloudGet();
-      if(cloud && cloud.data && Object.keys(cloud.data).length){
-        syncing=true;
-        writeState(cloud.data);
-        syncing=false;
-        setStatus('☁ Cloud loaded');
-        try{ if(typeof renderAll==='function') renderAll(); }catch(e){}
-        try{ if(typeof renderCustomerManagement==='function') renderCustomerManagement(); }catch(e){}
-        try{ if(typeof renderDuePage==='function') renderDuePage(); }catch(e){}
-      }else{
-        await cloudSave();
-      }
-      installWatcher();
-    }catch(e){
-      console.warn('Supabase unavailable:',e);
-      setStatus('☁ Not connected');
-      installWatcher();
-    }
-  }
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',start,{once:true}); else start();
+ const SYNC_KEYS=['rupantor_pos_products','rupantor_pos_sales','rupantor_pos_debt_receivable','rupantor_pos_customers','rupantor_pos_deleted_customers','rupantor_pos_income_entries','rupantor_pos_expense_entries','rupantor_pos_monthly_closed','rupantor_pos_accounting_month'];
+ let syncing=false,timer=null,watcherInstalled=false,starting=false;
+ function readState(){const data={};SYNC_KEYS.forEach(k=>{const v=localStorage.getItem(k);if(v!==null)data[k]=v;});return data;}
+ function writeState(data){if(!data||typeof data!=='object')return;SYNC_KEYS.forEach(k=>{if(Object.prototype.hasOwnProperty.call(data,k))localStorage.setItem(k,String(data[k]));});}
+ function setStatus(t){const el=document.getElementById('supabaseSyncStatus');if(el)el.textContent=t;}
+ function addStatusUI(){if(document.getElementById('supabaseSyncStatus'))return;const el=document.createElement('div');el.id='supabaseSyncStatus';el.textContent='☁ Auth required';el.style.cssText='position:fixed;right:14px;bottom:14px;z-index:99999;background:#0b55c7;color:#fff;padding:7px 11px;border-radius:999px;font:700 12px Arial;box-shadow:0 5px 18px #0002';document.body.appendChild(el);}
+ async function rpc(name,args){const client=window.posSupabase;if(!client)throw new Error('Supabase client not ready');const {data,error}=await client.rpc(name,args||{});if(error)throw error;return data;}
+ async function cloudLoad(){if(!window.__posAuthProfile){setStatus('☁ Login required');return;}syncing=true;try{const data=await rpc('get_pos_state');if(data&&Object.keys(data).length){writeState(data);setStatus('☁ Cloud loaded');try{if(typeof renderAll==='function')renderAll();}catch(e){}try{if(typeof renderCustomerManagement==='function')renderCustomerManagement();}catch(e){}try{if(typeof renderDuePage==='function')renderDuePage();}catch(e){}}else{await cloudSave();}}catch(e){console.warn('Supabase load failed:',e);setStatus('☁ Sync error');}finally{syncing=false;}}
+ async function cloudSave(){if(syncing||!window.__posAuthProfile)return;syncing=true;try{await rpc('save_pos_state',{p_data:readState()});setStatus('☁ Synced');}catch(e){console.warn('Supabase save failed:',e);setStatus('☁ Sync error');}finally{syncing=false;}}
+ function queueSave(){clearTimeout(timer);timer=setTimeout(cloudSave,700);}
+ function installWatcher(){if(watcherInstalled)return;watcherInstalled=true;const native=localStorage.setItem.bind(localStorage);localStorage.setItem=function(k,v){native(k,v);if(!syncing&&SYNC_KEYS.includes(String(k))&&window.__posAuthProfile)queueSave();};}
+ async function start(){if(starting)return;starting=true;addStatusUI();const ok=await (window.posAuthReady||Promise.resolve(false));if(ok&&window.__posAuthProfile){await cloudLoad();installWatcher();}else setStatus('☁ Login required');starting=false;}
+ document.addEventListener('pos-auth-changed',e=>{if(e.detail?.signedIn){cloudLoad().then(installWatcher);}else setStatus('☁ Login required');});
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
 </script>
 </body>
